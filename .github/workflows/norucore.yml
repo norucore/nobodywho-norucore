@@ -45,10 +45,21 @@ jobs:
           mkdir out
           R=nobodywho/target/x86_64-unknown-linux-gnu/release
           cp $R/libnobodywho_godot.so out/x86_64-unknown-linux-gnu-release.so
-          # llama.cpp shared libraries, and the ggml backends (CPU variants, Vulkan).
-          find $R -maxdepth 1 -name 'lib*.so*' ! -name 'libnobodywho_godot.so' -exec cp -P {} out/ \;
-          find nobodywho/target/x86_64-unknown-linux-gnu/release/build -path '*llama-cpp-sys-2-*/out/backends/*.so' -exec cp {} out/ \;
-          strip --strip-unneeded out/*.so
+          # ggml backends (CPU variants, Vulkan), then every llama.cpp library the
+          # files in out/ need, by soname, as real files (no symlinks).
+          find $R/build -path '*llama-cpp-sys-2-*/out/backends/*.so' -exec cp -L {} out/ \;
+          changed=1
+          while [ $changed = 1 ]; do
+            changed=0
+            for f in out/*.so*; do
+              for n in $(readelf -d "$f" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p'); do
+                if [ ! -e "out/$n" ] && [ -e "$R/$n" ]; then cp -L "$R/$n" "out/$n"; changed=1; fi
+              done
+            done
+          done
+          strip --strip-unneeded out/*.so*
+          echo "Unresolved libraries (must be empty except system ones):"
+          LD_LIBRARY_PATH=out ldd out/*.so* | grep "not found" || true
           echo "Newest glibc symbol required:"
           objdump -T out/*.so | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
           ls -la out
@@ -102,8 +113,10 @@ jobs:
           mkdir out
           cp C:/t/x86_64-pc-windows-msvc/release/nobodywho_godot.dll out/x86_64-pc-windows-msvc-release.dll
           # llama.cpp DLLs, and the ggml backends (CPU variants, Vulkan).
-          find C:/t/x86_64-pc-windows-msvc/release -maxdepth 1 -name '*.dll' ! -name 'nobodywho_godot.dll' -exec cp {} out/ \;
-          find C:/t/x86_64-pc-windows-msvc/release/build -path '*llama-cpp-sys-2-*/out/backends/*.dll' -exec cp {} out/ \;
+          # Wherever cargo/cmake left them (top level, deps/ or the build out dir), one copy each.
+          find C:/t/x86_64-pc-windows-msvc/release \( -name 'llama*.dll' -o -name 'ggml*.dll' -o -name 'mtmd*.dll' \) | while read f; do
+            [ -e "out/$(basename "$f")" ] || cp "$f" out/
+          done
           ls -la out
       - uses: actions/upload-artifact@v5
         with:
