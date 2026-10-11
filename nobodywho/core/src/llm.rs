@@ -29,7 +29,29 @@ lazy_static! {
         Mutex::new(GlobalInferenceLockToken);
 }
 
+/// NoruCore fork: folders that hold the ggml backend libraries when built with
+/// `dynamic-backends`. The host sets them before the first model loads.
+static BACKEND_DIRS: std::sync::OnceLock<Vec<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+pub fn set_backend_dirs(dirs: Vec<std::path::PathBuf>) {
+    let _ = BACKEND_DIRS.set(dirs);
+}
+
+/// The backend, initialised once. Device queries call it first: with dynamic backends
+/// the CPU and GPU devices only exist after their libraries are loaded.
+pub(crate) fn backend() -> &'static LlamaBackend {
+    &LLAMA_BACKEND
+}
+
 static LLAMA_BACKEND: LazyLock<LlamaBackend> = LazyLock::new(|| {
+    #[cfg(feature = "dynamic-backends")]
+    for dir in BACKEND_DIRS.get().into_iter().flatten() {
+        if dir.is_dir() {
+            info!(dir = %dir.display(), "Loading ggml backends");
+            llama_cpp_2::llama_backend::load_backends_from_path(dir);
+        }
+    }
+
     // HACK: On Qualcomm Snapdragon 750G, Adreno 619, Fairphone 4, the OpenCL
     // backend deadlocks and aborts when running `f32_f16_q1_vec`.
     //

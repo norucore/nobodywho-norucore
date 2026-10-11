@@ -73,6 +73,9 @@ espeak-ng = { optional = true, version = "0.2.0", default-features = false, feat
 # ONNX Runtime, espeak-ng and the audio stack. On by default as upstream; the Godot
 # build for NoruCore turns it off (the app does not use them).
 default = ["speech"]
+# NoruCore fork: ggml CPU variants (SSE4.2 ... AVX-512) and Vulkan as separate libraries,
+# picked at runtime, so one x86_64 build is fast on new CPUs and still starts on old ones.
+dynamic-backends = ["llama-cpp-2/dynamic-backends"]
 speech = ["dep:misaki-rs", "dep:hound", "dep:safetensors", "dep:symphonia-core", "dep:symphonia-bundle-mp3", "dep:rubato", "dep:mel_spec", "dep:tokenizers", "dep:sentencepiece-rs", "dep:ndarray", "dep:rand_distr", "dep:unicode-normalization", "dep:emojis", "dep:unicode-segmentation", "dep:espeak-ng", "dep:ort"]
 
 [target.'cfg(any(target_os = "android", target_vendor = "apple"))'.dependencies]

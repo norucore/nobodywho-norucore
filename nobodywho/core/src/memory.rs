@@ -44,6 +44,7 @@ fn device_free(d: &llama_cpp_2::LlamaBackendDevice) -> u64 {
 }
 
 fn backend_devices() -> Vec<llama_cpp_2::LlamaBackendDevice> {
+    crate::llm::backend();
     llama_cpp_2::list_llama_ggml_backend_devices()
 }
 

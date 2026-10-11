@@ -147,6 +147,19 @@ struct NobodyWhoExtension;
 #[gdextension]
 unsafe impl ExtensionLibrary for NobodyWhoExtension {
     fn on_stage_init(stage: InitStage) {
+        // NoruCore fork: the ggml backend libraries sit next to this library, in the
+        // addon folder while editing and next to the executable once exported.
+        if stage == InitStage::Scene {
+            let addon = godot::classes::ProjectSettings::singleton()
+                .globalize_path("res://addons/nobodywho")
+                .to_string();
+            let exe = godot::classes::Os::singleton().get_executable_path().to_string();
+            let mut dirs = vec![std::path::PathBuf::from(addon)];
+            if let Some(parent) = std::path::Path::new(&exe).parent() {
+                dirs.push(parent.to_path_buf());
+            }
+            nobodywho::llm::set_backend_dirs(dirs);
+        }
         // Tracing needs Godot loaded, so init it here, not at startup.
         if stage == InitStage::Editor {
             godot_print!("NobodyWho Godot version: {}", env!("CARGO_PKG_VERSION"));

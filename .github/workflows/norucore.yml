@@ -14,6 +14,9 @@ jobs:
   linux:
     # 22.04 = glibc 2.35, so the library loads on Ubuntu 22.04.
     runs-on: ubuntu-22.04
+    env:
+      # libllama/libggml sit next to libnobodywho: find them there.
+      RUSTFLAGS: "-C link-arg=-Wl,-rpath,$ORIGIN"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/cache@v5
@@ -40,7 +43,11 @@ jobs:
       - name: Package
         run: |
           mkdir out
-          cp nobodywho/target/x86_64-unknown-linux-gnu/release/libnobodywho_godot.so out/x86_64-unknown-linux-gnu-release.so
+          R=nobodywho/target/x86_64-unknown-linux-gnu/release
+          cp $R/libnobodywho_godot.so out/x86_64-unknown-linux-gnu-release.so
+          # llama.cpp shared libraries, and the ggml backends (CPU variants, Vulkan).
+          find $R -maxdepth 1 -name 'lib*.so*' ! -name 'libnobodywho_godot.so' -exec cp -P {} out/ \;
+          find nobodywho/target/x86_64-unknown-linux-gnu/release/build -path '*llama-cpp-sys-2-*/out/backends/*.so' -exec cp {} out/ \;
           strip --strip-unneeded out/*.so
           echo "Newest glibc symbol required:"
           objdump -T out/*.so | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
@@ -94,6 +101,9 @@ jobs:
         run: |
           mkdir out
           cp C:/t/x86_64-pc-windows-msvc/release/nobodywho_godot.dll out/x86_64-pc-windows-msvc-release.dll
+          # llama.cpp DLLs, and the ggml backends (CPU variants, Vulkan).
+          find C:/t/x86_64-pc-windows-msvc/release -maxdepth 1 -name '*.dll' ! -name 'nobodywho_godot.dll' -exec cp {} out/ \;
+          find C:/t/x86_64-pc-windows-msvc/release/build -path '*llama-cpp-sys-2-*/out/backends/*.dll' -exec cp {} out/ \;
           ls -la out
       - uses: actions/upload-artifact@v5
         with:
