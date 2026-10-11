@@ -53,7 +53,9 @@ jobs:
             changed=0
             for f in out/*.so*; do
               for n in $(readelf -d "$f" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p'); do
-                if [ ! -e "out/$n" ] && [ -e "$R/$n" ]; then cp -L "$R/$n" "out/$n"; changed=1; fi
+                [ -e "out/$n" ] && continue
+                src=$(find $R -name "$n" -print -quit)
+                if [ -n "$src" ]; then cp -L "$src" "out/$n"; changed=1; fi
               done
             done
           done
