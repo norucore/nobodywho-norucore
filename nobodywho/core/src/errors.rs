@@ -633,6 +633,13 @@ pub enum HuggingFaceError {
     },
 }
 
+#[cfg(feature = "speech")]
+pub use speech_errors::*;
+
+#[cfg(feature = "speech")]
+mod speech_errors {
+use super::*;
+
 // TextToSpeech errors
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -862,6 +869,8 @@ impl From<HuggingFaceError> for VoiceActivityDetectionError {
     fn from(e: HuggingFaceError) -> Self {
         VoiceActivityDetectionError::Init(e.to_string())
     }
+}
+
 }
 
 // ChatWorker errors

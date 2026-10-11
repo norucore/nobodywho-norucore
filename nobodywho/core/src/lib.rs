@@ -11,14 +11,18 @@ mod join_on_drop;
 pub mod llm;
 pub mod memory;
 mod model_selection;
+#[cfg(feature = "speech")]
 pub mod onnx;
 pub mod sampler;
+#[cfg(feature = "speech")]
 pub mod speech_to_text;
 pub mod stream;
 pub mod template;
+#[cfg(feature = "speech")]
 pub mod text_to_speech;
 pub mod tokenizer;
 pub mod tool_calling;
+#[cfg(feature = "speech")]
 pub mod voice_activity_detection;
 
 /// Re-exported so bindings can name `Diagnostic` without depending on miette directly.

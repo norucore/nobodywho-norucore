@@ -782,6 +782,7 @@ pub struct NobodyWhoTokenStream {
 /// way. Mirrors the Python binding's `AsyncStreamInner` enum.
 pub(crate) enum StreamInner {
     Chat(nobodywho::chat::TokenStreamAsync),
+    #[cfg(feature = "speech")]
     Stt(nobodywho::stream::TokenStreamAsync<nobodywho::errors::SpeechToTextError>),
 }
 
@@ -789,12 +790,14 @@ impl StreamInner {
     async fn next_token(&mut self) -> Result<Option<String>, StreamError> {
         match self {
             StreamInner::Chat(s) => s.next_token().await.map_err(StreamError::Chat),
+            #[cfg(feature = "speech")]
             StreamInner::Stt(s) => s.next_token().await.map_err(StreamError::Stt),
         }
     }
     async fn completed(&mut self) -> Result<String, StreamError> {
         match self {
             StreamInner::Chat(s) => s.completed().await.map_err(StreamError::Chat),
+            #[cfg(feature = "speech")]
             StreamInner::Stt(s) => s.completed().await.map_err(StreamError::Stt),
         }
     }
@@ -803,6 +806,7 @@ impl StreamInner {
 /// Boxed error from either stream type, for uniform rendering.
 pub(crate) enum StreamError {
     Chat(nobodywho::errors::CompletionError),
+    #[cfg(feature = "speech")]
     Stt(nobodywho::errors::SpeechToTextError),
 }
 
@@ -811,6 +815,7 @@ fn render_stream_error(e: &StreamError) -> String {
         // CompletionError is miette::Diagnostic — rich rendering.
         StreamError::Chat(c) => nobodywho::render_miette(c),
         // SpeechToTextError is thiserror-only — plain to_string().
+        #[cfg(feature = "speech")]
         StreamError::Stt(s) => s.to_string(),
     }
 }
@@ -867,6 +872,7 @@ impl NobodyWhoTokenStream {
     }
 
     /// Wrap a SpeechToText token stream.
+    #[cfg(feature = "speech")]
     pub(crate) fn wrap_stt(
         stream: nobodywho::stream::TokenStreamAsync<nobodywho::errors::SpeechToTextError>,
     ) -> Gd<Self> {

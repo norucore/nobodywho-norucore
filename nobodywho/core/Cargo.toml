@@ -4,7 +4,7 @@ version = "2.4.0"
 edition = "2021"
 
 [dependencies]
-misaki-rs = { version = "0.6.0", default-features = false }
+misaki-rs = { optional = true, version = "0.6.0", default-features = false }
 encoding_rs = "0.8.34"
 thiserror = "2.0.3"
 miette = { version = "7.6.0", features = ["fancy"] }
@@ -45,28 +45,35 @@ ureq = { version = "3", features = ["rustls"] }
 indicatif = "0.18"
 walkdir = "2.5"
 tempfile = "3"
-hound = "3"
-safetensors = "0.8.0"
+hound = { version = "3", optional = true }
+safetensors = { version = "0.8.0", optional = true }
 # SpeechToText audio pipeline: WAV via hound, MP3 via symphonia-bundle-mp3 directly
-symphonia-core = "0.5"
-symphonia-bundle-mp3 = { version = "0.5", default-features = false, features = ["mp3"] }
-rubato = "0.16"
-mel_spec = "0.4"
-tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
-sentencepiece-rs = "0.2"
+symphonia-core = { version = "0.5", optional = true }
+symphonia-bundle-mp3 = { optional = true, version = "0.5", default-features = false, features = ["mp3"] }
+rubato = { version = "0.16", optional = true }
+mel_spec = { version = "0.4", optional = true }
+tokenizers = { optional = true, version = "0.23.2", default-features = false, features = ["onig"] }
+sentencepiece-rs = { version = "0.2", optional = true }
 # Shared by SpeechToText (via mel_spec) and TextToSpeech (supertonic); use 0.17 as the workspace default
-ndarray = "0.17"
-rand_distr = "0.6"
-unicode-normalization = "0.1"
-emojis = "0.9.0"
-unicode-segmentation = "1.13.3"
-espeak-ng = { version = "0.2.0", default-features = false, features = [
+ndarray = { version = "0.17", optional = true }
+rand_distr = { version = "0.6", optional = true }
+unicode-normalization = { version = "0.1", optional = true }
+emojis = { version = "0.9.0", optional = true }
+unicode-segmentation = { version = "1.13.3", optional = true }
+espeak-ng = { optional = true, version = "0.2.0", default-features = false, features = [
     "bundled-data-en",
     "bundled-data-es",
     "bundled-data-fr",
     "bundled-data-it",
     "bundled-data-pt",
 ] }
+
+[features]
+# NoruCore fork: speech-to-text, text-to-speech and voice activity detection pull in
+# ONNX Runtime, espeak-ng and the audio stack. On by default as upstream; the Godot
+# build for NoruCore turns it off (the app does not use them).
+default = ["speech"]
+speech = ["dep:misaki-rs", "dep:hound", "dep:safetensors", "dep:symphonia-core", "dep:symphonia-bundle-mp3", "dep:rubato", "dep:mel_spec", "dep:tokenizers", "dep:sentencepiece-rs", "dep:ndarray", "dep:rand_distr", "dep:unicode-normalization", "dep:emojis", "dep:unicode-segmentation", "dep:espeak-ng", "dep:ort"]
 
 [target.'cfg(any(target_os = "android", target_vendor = "apple"))'.dependencies]
 libc = "0.2"
@@ -84,11 +91,11 @@ llama-cpp-2 = { version = "=0.1.158", default-features = false, features = [
     "vulkan",
     "opencl",
 ] }
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "copy-dylibs", "api-20"] }
+ort = { optional = true, version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "copy-dylibs", "api-20"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 dirs = "7.0.0"
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "copy-dylibs", "api-20"] }
+ort = { optional = true, version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "copy-dylibs", "api-20"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
@@ -100,7 +107,7 @@ windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] 
 # for it elsewhere (aarch64 Linux) links fine but fails to load at runtime.
 # Keep this cfg in sync with the CUDA cfgs in core/src/onnx.rs.
 [target.'cfg(all(any(target_os = "linux", target_os = "windows"), target_arch = "x86_64"))'.dependencies]
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["cuda"] }
+ort = { optional = true, version = "=2.0.0-rc.13", default-features = false, features = ["cuda"] }
 
 # Enable Vulkan for x86_64, x86, and aarch64 targets (excluding Apple platforms and Android).
 # Apple platforms use Metal, which is auto-enabled by llama-cpp-rs for all Apple targets

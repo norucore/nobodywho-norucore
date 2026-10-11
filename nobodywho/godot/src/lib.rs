@@ -10,10 +10,13 @@ mod encoder;
 mod model;
 mod prompt;
 mod sampler;
+#[cfg(feature = "speech")]
 mod speech_to_text;
 mod task;
+#[cfg(feature = "speech")]
 mod text_to_speech;
 mod tools;
+#[cfg(feature = "speech")]
 mod vad;
 
 /// Routes tracing lines to the Godot console.

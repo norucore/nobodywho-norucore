@@ -8,9 +8,14 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [dependencies]
-nobodywho = { path = "../core" }
+nobodywho = { path = "../core", default-features = false }
 godot = { version = "0.5.4", features = [ "register-docs", "experimental-threads" ] }
 tokio = "1.44.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 serde_json = { version = "1.0.140", features = [ "preserve_order" ] }
+
+[features]
+# NoruCore fork: off, the app does not use speech. `--features speech` restores upstream.
+default = []
+speech = ["nobodywho/speech"]

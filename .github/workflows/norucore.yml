@@ -1,0 +1,135 @@
+name: NoruCore Godot build
+
+# Builds the Godot GDExtension for the four desktop targets NoruCore ships.
+# Upstream's workflows are removed on this branch: they need paid Warp runners.
+on:
+  push:
+    branches: [norucore]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    # 22.04 = glibc 2.35, so the library loads on Ubuntu 22.04.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nobodywho/target
+          key: linux-${{ hashFiles('nobodywho/Cargo.lock') }}-${{ hashFiles('nobodywho/core/Cargo.toml', 'nobodywho/godot/Cargo.toml') }}
+          restore-keys: linux-
+      - name: Rust
+        run: rustup update stable && rustup default stable
+      - name: Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1.2.5
+        with:
+          vulkan_version: 1.4.313.0
+          cache: true
+          install_runtime: false
+      - name: Build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev cmake ninja-build
+      - name: Build
+        working-directory: nobodywho
+        run: cargo build -p nobodywho-godot --release --locked --target x86_64-unknown-linux-gnu
+      - name: Package
+        run: |
+          mkdir out
+          cp nobodywho/target/x86_64-unknown-linux-gnu/release/libnobodywho_godot.so out/x86_64-unknown-linux-gnu-release.so
+          strip --strip-unneeded out/*.so
+          echo "Newest glibc symbol required:"
+          objdump -T out/*.so | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+          ls -la out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: nobodywho-linux-x86_64
+          path: out/*
+          retention-days: 3
+
+  windows:
+    runs-on: windows-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CMAKE_GENERATOR: Ninja
+      RUSTFLAGS: "-l Advapi32 -C debuginfo=0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            C:/t
+          key: windows-${{ hashFiles('nobodywho/Cargo.lock') }}-${{ hashFiles('nobodywho/core/Cargo.toml', 'nobodywho/godot/Cargo.toml') }}
+          restore-keys: windows-
+      - name: Rust
+        run: rustup update stable && rustup default stable
+      - name: Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1.2.5
+        with:
+          # Matches llama.cpp's own Windows Vulkan CI (SPIRV-Headers config needed).
+          vulkan_version: 1.4.313.2
+          cache: true
+          install_runtime: true
+          stripdown: true
+      - name: Ninja
+        run: choco install ninja
+      - name: Build
+        shell: pwsh
+        run: |
+          # Short paths: llama.cpp's nested submodules exceed MAX_PATH otherwise.
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+          git config --system core.longpaths true
+          New-Item -ItemType Directory -Force C:/n | Out-Null
+          Copy-Item -Recurse -Force ./nobodywho/* C:/n/
+          cd C:/n
+          cargo build -p nobodywho-godot --release --locked --target x86_64-pc-windows-msvc --target-dir C:/t
+      - name: Package
+        shell: bash
+        run: |
+          mkdir out
+          cp C:/t/x86_64-pc-windows-msvc/release/nobodywho_godot.dll out/x86_64-pc-windows-msvc-release.dll
+          ls -la out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: nobodywho-windows-x86_64
+          path: out/*
+          retention-days: 3
+
+  macos:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nobodywho/target
+          key: macos-${{ matrix.target }}-${{ hashFiles('nobodywho/Cargo.lock') }}-${{ hashFiles('nobodywho/core/Cargo.toml', 'nobodywho/godot/Cargo.toml') }}
+          restore-keys: macos-${{ matrix.target }}-
+      - name: Rust
+        run: rustup update stable && rustup default stable && rustup target add ${{ matrix.target }}
+      - name: Build
+        working-directory: nobodywho
+        run: cargo build -p nobodywho-godot --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir out
+          cp nobodywho/target/${{ matrix.target }}/release/libnobodywho_godot.dylib out/${{ matrix.target }}-release.dylib
+          strip -x out/*.dylib
+          ls -la out
+      - uses: actions/upload-artifact@v5
+        with:
+          name: nobodywho-macos-${{ matrix.target }}
+          path: out/*
+          retention-days: 3
