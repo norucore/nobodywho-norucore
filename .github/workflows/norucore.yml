@@ -9,6 +9,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # llama.cpp links OpenSSL into llama-common when the runner has it, for model
+  # downloads NoruCore never does; users don't have the DLL (Error 126 on Windows).
+  # build.rs forwards CMAKE_* to CMake but does not watch them: bump the cache keys below.
+  CMAKE_DISABLE_FIND_PACKAGE_OpenSSL: "ON"
 
 jobs:
   linux:
@@ -25,8 +29,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             nobodywho/target
-          key: linux-${{ hashFiles('nobodywho/Cargo.lock') }}-${{ hashFiles('nobodywho/core/Cargo.toml', 'nobodywho/godot/Cargo.toml') }}
-          restore-keys: linux-
+          key: linux-nossl-${{ hashFiles('nobodywho/Cargo.lock') }}-${{ hashFiles('nobodywho/core/Cargo.toml', 'nobodywho/godot/Cargo.toml') }}
+          restore-keys: linux-nossl-
       - name: Rust
         run: rustup update stable && rustup default stable
       - name: Vulkan SDK
@@ -61,7 +65,8 @@ jobs:
           done
           strip --strip-unneeded out/*.so*
           echo "Unresolved libraries (must be empty except system ones):"
-          LD_LIBRARY_PATH=out ldd out/*.so* | grep "not found" || true
+          LD_LIBRARY_PATH=out ldd out/*.so* | grep "not found" && exit 1
+          if readelf -d out/*.so* | grep -E "libssl|libcrypto"; then echo "OpenSSL still linked"; exit 1; fi
           echo "Newest glibc symbol required:"
           objdump -T out/*.so | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
           ls -la out
@@ -85,8 +90,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             C:/t
-          key: windows-${{ hashFiles('nobodywho/Cargo.lock') }}-${{ hashFiles('nobodywho/core/Cargo.toml', 'nobodywho/godot/Cargo.toml') }}
-          restore-keys: windows-
+          key: windows-nossl-${{ hashFiles('nobodywho/Cargo.lock') }}-${{ hashFiles('nobodywho/core/Cargo.toml', 'nobodywho/godot/Cargo.toml') }}
+          restore-keys: windows-nossl-
       - name: Rust
         run: rustup update stable && rustup default stable
       - name: Vulkan SDK
@@ -119,6 +124,10 @@ jobs:
           find C:/t/x86_64-pc-windows-msvc/release \( -name 'llama*.dll' -o -name 'ggml*.dll' -o -name 'mtmd*.dll' \) | while read f; do
             [ -e "out/$(basename "$f")" ] || cp "$f" out/
           done
+          # Visual C++ runtime and OpenMP, app-local (Microsoft allows it): a PC without
+          # the VC++ Redistributable could not load any of these DLLs.
+          redist=$(ls -d "C:/Program Files/Microsoft Visual Studio"/*/*/VC/Redist/MSVC/14.*/x64 | sort -V | tail -1)
+          cp "$redist"/Microsoft.VC14*.CRT/msvcp140.dll "$redist"/Microsoft.VC14*.CRT/vcruntime140.dll "$redist"/Microsoft.VC14*.CRT/vcruntime140_1.dll "$redist"/Microsoft.VC14*.OpenMP/vcomp140.dll out/
           ls -la out
       - uses: actions/upload-artifact@v5
         with:
