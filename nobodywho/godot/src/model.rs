@@ -33,13 +33,14 @@ impl NobodyWhoModel {
     /// - `"mmproj_path"` (String): multimodal projector file for vision models.
     /// - `"draft_path"` (String): MTP draft-heads gguf for speculative decoding.
     ///   For models that bundle MTP layers (e.g. Qwen3.5), pass the model file itself.
+    /// - `"n_ctx"` (int): context the app will use; GPU layers are fitted so model + this context fit in VRAM.
     ///
     /// Pass `{}` for defaults. Unknown keys and values of the wrong type are
     /// errors (resolve to null).
     #[func]
     fn create(path: GString, config: VarDictionary) -> Variant {
         let path = resolve_godot_path(&path);
-        let (use_gpu, mmproj_path, draft_path) = match Self::parse_config(&config) {
+        let (use_gpu, mmproj_path, draft_path, n_ctx) = match Self::parse_config(&config) {
             Ok(parsed) => parsed,
             Err(e) => {
                 godot_error!("NobodyWhoModel.create: {e}");
@@ -51,8 +52,15 @@ impl NobodyWhoModel {
         // Option<DownloadProgressCallback>; emit a signal from inside the
         // callback instead of bridging a Callable. Deferred to a later chunk.
         task(async move {
-            match nobodywho::llm::get_model_async(path, use_gpu, mmproj_path, draft_path, None)
-                .await
+            match nobodywho::llm::get_model_async_with_ctx(
+                path,
+                use_gpu,
+                mmproj_path,
+                draft_path,
+                None,
+                n_ctx,
+            )
+            .await
             {
                 Ok(model) => {
                     let gd = Gd::from_init_fn(|base| NobodyWhoModel {
@@ -77,19 +85,34 @@ impl NobodyWhoModel {
     fn get_source(&self) -> GString {
         GString::from(self.inner.source())
     }
+
+    /// How the model was placed at load time: `{"gpu_layers": int,
+    /// "total_layers": int, "fitted": bool}`. `fitted` is true when llama.cpp's
+    /// memory fit chose the layers, false for the fallback heuristic or CPU.
+    #[func]
+    fn get_load_info(&self) -> VarDictionary {
+        let mut dict: VarDictionary = Dictionary::new();
+        let _ = dict.insert(&GString::from("gpu_layers"), &(self.inner.gpu_layers() as i64).to_variant());
+        let _ = dict.insert(&GString::from("total_layers"), &(self.inner.total_layers() as i64).to_variant());
+        let _ = dict.insert(&GString::from("fitted"), &self.inner.fitted().to_variant());
+        dict
+    }
 }
 
 impl NobodyWhoModel {
     /// Parse the `create` config Dictionary into `(use_gpu, mmproj_path,
-    /// draft_path)`. Unknown keys and invalid values are errors.
+    /// draft_path, n_ctx)`. Unknown keys and invalid values are errors.
     fn parse_config(
         config: &VarDictionary,
-    ) -> Result<(bool, Option<String>, Option<String>), String> {
-        validate_config_keys(config, &["use_gpu", "mmproj_path", "draft_path"])?;
+    ) -> Result<(bool, Option<String>, Option<String>, Option<u32>), String> {
+        validate_config_keys(config, &["use_gpu", "mmproj_path", "draft_path", "n_ctx"])?;
         Ok((
             dict_get::<bool>(config, "use_gpu")?.unwrap_or(true),
             dict_get::<GString>(config, "mmproj_path")?.map(|s| resolve_godot_path(&s)),
             dict_get::<GString>(config, "draft_path")?.map(|s| resolve_godot_path(&s)),
+            dict_get::<i64>(config, "n_ctx")?
+                .filter(|&n| n > 0)
+                .map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
         ))
     }
 }

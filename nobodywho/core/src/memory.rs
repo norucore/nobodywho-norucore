@@ -201,12 +201,35 @@ fn estimate_kv_cache_bytes(arch: &ModelArchitecture, n_ctx: u32) -> u64 {
     2 * arch.n_layers as u64 * n_ctx as u64 * arch.n_head_kv as u64 * head_dim * 2
 }
 
+/// Offloadable layers (block_count + 1) of a GGUF, 0 if it cannot be read.
+pub(crate) fn model_layer_count(path: &Path) -> u32 {
+    read_gguf_model_info(path).map_or(0, |i| i.n_layers)
+}
+
+/// Architecture from the GGUF keys, for the KV estimate before the model is loaded.
+fn read_gguf_architecture(path: &Path) -> Option<ModelArchitecture> {
+    let ctx = llama_cpp_2::gguf::GgufContext::from_file(path)?;
+    let find_u32 = |suffix: &str| {
+        (0..ctx.n_kv())
+            .find(|&i| ctx.key_at(i).is_some_and(|k| k.ends_with(suffix)))
+            .map(|i| ctx.val_u32(i))
+    };
+    let n_head = find_u32(".attention.head_count")?;
+    Some(ModelArchitecture {
+        n_layers: find_u32(".block_count")?,
+        n_embd: find_u32(".embedding_length")?,
+        n_head,
+        n_head_kv: find_u32(".attention.head_count_kv").unwrap_or(n_head),
+    })
+}
+
 /// Compute how many GPU layers to offload based on available VRAM.
 /// This function never fails: on any estimation error it falls back to current behavior.
 pub(crate) fn plan_model_loading(
     model_path: &Path,
     mmproj_path: Option<&Path>,
     use_gpu: bool,
+    n_ctx_hint: Option<u32>,
 ) -> LoadingPlan {
     if !use_gpu {
         return LoadingPlan {
@@ -251,6 +274,15 @@ pub(crate) fn plan_model_loading(
             }
         }
     }
+
+    // Leave room for the KV cache (when the architecture is readable) and a 1 GiB margin.
+    if let Some(arch) = read_gguf_architecture(model_path) {
+        available = available.saturating_sub(estimate_kv_cache_bytes(
+            &arch,
+            n_ctx_hint.unwrap_or(4096),
+        ));
+    }
+    available = available.saturating_sub(1024 * 1024 * 1024);
 
     let per_layer = estimate_per_layer_bytes(&info);
     if per_layer == 0 {

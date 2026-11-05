@@ -10,7 +10,7 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::speculative::{MtpSpeculative, MtpSpeculativeParams};
-use std::pin::pin;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use tracing::{error, info, info_span, warn};
@@ -74,6 +74,9 @@ pub struct Model {
     pub(crate) language_model: LlamaModel,
     pub(crate) projection_model: Option<ProjectionModel>,
     pub(crate) draft_model: Option<DraftModel>,
+    pub(crate) gpu_layers: i32,
+    pub(crate) total_layers: u32,
+    pub(crate) fitted: bool,
 }
 
 #[derive(Debug)]
@@ -95,6 +98,21 @@ impl Model {
     /// The identifier used to load the model.
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Layers offloaded to the GPU at load time.
+    pub fn gpu_layers(&self) -> i32 {
+        self.gpu_layers
+    }
+
+    /// Offloadable layers in the model (block_count + 1), 0 if unknown.
+    pub fn total_layers(&self) -> u32 {
+        self.total_layers
+    }
+
+    /// True if llama.cpp's own memory fit chose the layers (false: heuristic or CPU).
+    pub fn fitted(&self) -> bool {
+        self.fitted
     }
 
     /// Returns true if this model can generate text (i.e. is an autoregressive decoder).
@@ -155,7 +173,6 @@ pub fn get_model(
     )
 }
 
-#[tracing::instrument(level = "info", skip(progress, cancellation))]
 pub fn get_model_cancellable(
     model_path: &str,
     use_gpu_if_available: bool,
@@ -163,6 +180,69 @@ pub fn get_model_cancellable(
     draft_model_path: Option<&str>,
     progress: Option<DownloadProgressCallback>,
     cancellation: Option<DownloadCancellationCallback>,
+) -> Result<Model, LoadModelError> {
+    get_model_with_ctx(
+        model_path,
+        use_gpu_if_available,
+        mmproj_path,
+        draft_model_path,
+        progress,
+        cancellation,
+        None,
+    )
+}
+
+/// Fits the model on the GPU (llama.cpp `--fit`): weights + KV cache for `n_ctx` + compute
+/// buffers + 1 GiB margin per device. `None` if the fit fails.
+#[cfg(not(target_os = "android"))]
+fn try_fit(
+    model_path: &std::path::Path,
+    mtp_bundled: bool,
+    n_ctx: u32,
+) -> Option<Pin<Box<LlamaModelParams>>> {
+    // fit_params is not thread safe.
+    static FIT_LOCK: Mutex<()> = Mutex::new(());
+    // Devices only exist once the backend is initialised.
+    let _ = backend();
+    let c_path = std::ffi::CString::new(model_path.to_string_lossy().as_bytes()).ok()?;
+    let mut params = Box::pin(LlamaModelParams::default().with_load_mtp(mtp_bundled));
+    let mut cparams = LlamaContextParams::default()
+        .with_n_ctx(std::num::NonZero::new(n_ctx))
+        .with_n_batch(n_ctx)
+        .with_n_ubatch(n_ctx.min(512));
+    let mut margins = vec![1024usize * 1024 * 1024; llama_cpp_2::max_devices().max(1)];
+    let _guard = FIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // 3 = GGML_LOG_LEVEL_WARN (llama-cpp-sys-2 is not a direct dependency).
+    match params
+        .as_mut()
+        .fit_params(&c_path, &mut cparams, &mut margins, n_ctx, 3)
+    {
+        Ok(_) => Some(params),
+        Err(e) => {
+            warn!("NoruCore fit failed ({e}); falling back to the layer heuristic");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn try_fit(
+    _model_path: &std::path::Path,
+    _mtp_bundled: bool,
+    _n_ctx: u32,
+) -> Option<Pin<Box<LlamaModelParams>>> {
+    None
+}
+
+#[tracing::instrument(level = "info", skip(progress, cancellation))]
+pub fn get_model_with_ctx(
+    model_path: &str,
+    use_gpu_if_available: bool,
+    mmproj_path: Option<&str>,
+    draft_model_path: Option<&str>,
+    progress: Option<DownloadProgressCallback>,
+    cancellation: Option<DownloadCancellationCallback>,
+    n_ctx_hint: Option<u32>,
 ) -> Result<Model, LoadModelError> {
     if model_path == "auto" && mmproj_path.is_some() {
         return Err(LoadModelError::InvalidModel(
@@ -212,42 +292,69 @@ pub fn get_model_cancellable(
         None => None,
     };
 
-    let loading_plan =
-        memory::plan_model_loading(&real_model_path, real_mmproj_path.as_deref(), use_gpu);
-    let gpu_layers = loading_plan.gpu_layers;
-    for warning in &loading_plan.warnings {
-        warn!("{}", warning);
-    }
-
-    info!(use_gpu = use_gpu, gpu_layers = gpu_layers, "Loading model");
-
     // llama.cpp skips bundled MTP layers unless asked, so load them with the target instead of twice.
     let mtp_bundled = real_draft_model_path
         .as_deref()
         .is_some_and(|p| same_file(p, &real_model_path));
-    let model_params = LlamaModelParams::default()
-        .with_n_gpu_layers(gpu_layers)
-        .with_load_mtp(mtp_bundled);
+    let total_layers = memory::model_layer_count(&real_model_path);
+    let n_ctx = n_ctx_hint.unwrap_or(4096);
 
-    #[cfg(target_os = "android")]
-    let model_params = {
-        let device = if use_gpu && gpu_layers > 0 {
-            memory::select_best_gpu()
-        } else {
-            None
-        };
-        if let Some(device) = &device {
-            info!(backend = %device.backend, device = %device.name, gpu_layers, "Selected Android GPU");
-        }
-        // An empty list explicitly selects CPU. Do not let llama.cpp combine
-        // OpenCL and Vulkan devices backed by the same physical GPU.
-        let devices: Vec<_> = device.into_iter().map(|d| d.index).collect();
-        model_params.with_devices(&devices).map_err(|e| {
-            LoadModelError::InvalidModel(format!("Failed to select Android GPU: {e}"))
-        })?
+    let fit = if use_gpu {
+        try_fit(&real_model_path, mtp_bundled, n_ctx)
+    } else {
+        None
     };
+    let fitted = fit.is_some();
+    let (model_params, gpu_layers): (Pin<Box<LlamaModelParams>>, u32) = match fit {
+        Some(params) => {
+            // A negative value means "all layers".
+            let n = u32::try_from(params.n_gpu_layers()).unwrap_or(u32::MAX);
+            (params, n)
+        }
+        None => {
+            let loading_plan = memory::plan_model_loading(
+                &real_model_path,
+                real_mmproj_path.as_deref(),
+                use_gpu,
+                n_ctx_hint,
+            );
+            let gpu_layers = loading_plan.gpu_layers;
+            for warning in &loading_plan.warnings {
+                warn!("{}", warning);
+            }
+            let model_params = LlamaModelParams::default()
+                .with_n_gpu_layers(gpu_layers)
+                .with_load_mtp(mtp_bundled);
 
-    let model_params = pin!(model_params);
+            #[cfg(target_os = "android")]
+            let model_params = {
+                let device = if use_gpu && gpu_layers > 0 {
+                    memory::select_best_gpu()
+                } else {
+                    None
+                };
+                if let Some(device) = &device {
+                    info!(backend = %device.backend, device = %device.name, gpu_layers, "Selected Android GPU");
+                }
+                // An empty list explicitly selects CPU. Do not let llama.cpp combine
+                // OpenCL and Vulkan devices backed by the same physical GPU.
+                let devices: Vec<_> = device.into_iter().map(|d| d.index).collect();
+                model_params.with_devices(&devices).map_err(|e| {
+                    LoadModelError::InvalidModel(format!("Failed to select Android GPU: {e}"))
+                })?
+            };
+            (Box::pin(model_params), gpu_layers)
+        }
+    };
+    let shown_layers = if total_layers > 0 {
+        gpu_layers.min(total_layers)
+    } else {
+        gpu_layers
+    };
+    warn!("NoruCore fit: fitted={fitted} gpu_layers={shown_layers}/{total_layers} n_ctx={n_ctx}");
+
+    info!(use_gpu = use_gpu, gpu_layers = gpu_layers, "Loading model");
+
     let load_span = info_span!("model_load", path = %real_model_path.display());
     let _guard = load_span.enter();
 
@@ -291,9 +398,11 @@ pub fn get_model_cancellable(
         }
         Some(path) => {
             info!(path = %path.display(), "Loading MTP draft model");
-            let draft_params = pin!(LlamaModelParams::default()
-                .with_n_gpu_layers(gpu_layers)
-                .with_load_mtp(true));
+            let draft_params = Box::pin(
+                LlamaModelParams::default()
+                    .with_n_gpu_layers(gpu_layers)
+                    .with_load_mtp(true),
+            );
             let draft =
                 LlamaModel::load_from_file(&LLAMA_BACKEND, path, &draft_params).map_err(|e| {
                     let error_msg = format!(
@@ -313,6 +422,9 @@ pub fn get_model_cancellable(
         language_model,
         projection_model,
         draft_model,
+        gpu_layers: i32::try_from(shown_layers).unwrap_or(i32::MAX),
+        total_layers,
+        fitted,
     })
 }
 
@@ -345,14 +457,38 @@ pub async fn get_model_async(
     draft_model_path: Option<String>,
     progress: Option<DownloadProgressCallback>,
 ) -> Result<Model, LoadModelError> {
+    get_model_async_with_ctx(
+        model_path,
+        use_gpu_if_available,
+        mmproj_path,
+        draft_model_path,
+        progress,
+        None,
+    )
+    .await
+}
+
+/// Like [`get_model_async`], with the context size the app will use so the GPU
+/// layers are fitted for model + that context.
+#[tracing::instrument(level = "info", skip(progress))]
+pub async fn get_model_async_with_ctx(
+    model_path: String,
+    use_gpu_if_available: bool,
+    mmproj_path: Option<String>,
+    draft_model_path: Option<String>,
+    progress: Option<DownloadProgressCallback>,
+    n_ctx_hint: Option<u32>,
+) -> Result<Model, LoadModelError> {
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(4096);
     std::thread::spawn(move || {
-        output_tx.blocking_send(get_model(
+        output_tx.blocking_send(get_model_with_ctx(
             &model_path,
             use_gpu_if_available,
             mmproj_path.as_deref(),
             draft_model_path.as_deref(),
             progress,
+            None,
+            n_ctx_hint,
         ))
     });
 
